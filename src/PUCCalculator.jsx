@@ -219,63 +219,82 @@ export default function PUCCalculator(){
 const handleFileImport = (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    e.target.value = "";
+
     const reader = new FileReader();
     reader.onload = (evt) => {
-      const wb = XLSX.read(evt.target.result, { type: "binary" });
-      
-      // 1. Cerdas memilih sheet. Jika ada sheet "02_KALKULASI_PUC", pakai itu.
-      // Jika tidak, gunakan sheet pertama (untuk file excel upload manual)
-      let sheetName = wb.SheetNames[0];
-      if (wb.SheetNames.includes("02_KALKULASI_PUC")) {
-        sheetName = "02_KALKULASI_PUC";
-      }
-      
-      // Lewati baris kosong di atas jika mengambil dari template export
-      const data = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: "" });
-      
-      // Filter data kosong (terkadang membaca baris summary di bawah)
-      const validData = data.filter(r => Object.keys(r).length > 2);
+      try {
+        const wb = XLSX.read(new Uint8Array(evt.target.result), { type: "array" });
 
-      const imp = validData.map((r, i) => {
-        // 2. Fungsi pencocokan nama kolom secara fleksibel
-        const findValue = (keywords) => {
-          for (let key in r) {
-            const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, '');
-            if (keywords.includes(normalizedKey)) {
-              return r[key];
-            }
-          }
-          return null;
-        };
+        // Pilih sheet: Template_Karyawan > 02_KALKULASI_PUC > sheet pertama
+        let sheetName = wb.SheetNames[0];
+        if (wb.SheetNames.includes("Template_Karyawan")) sheetName = "Template_Karyawan";
+        else if (wb.SheetNames.includes("02_KALKULASI_PUC")) sheetName = "02_KALKULASI_PUC";
 
-        const nama = findValue(["nama", "name", "namakaryawan"]);
-        const age = Number(findValue(["usia", "age", "umur"]));
-        const masaKerja = Number(findValue(["masakerja", "masakerjan", "mk", "masakerjathn"]));
-        const gajiTahunan = Number(findValue(["gajitahunan", "gaji", "salary", "upah"]));
-        const tipeBenefit = findValue(["tipebenefit", "benefit", "tipe"]);
-        const gender = findValue(["gender", "jeniskelamin", "kelamin"]);
+        // Baca sebagai array-of-arrays agar bisa mendeteksi baris header secara dinamis
+        const rawRows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: "" });
 
-        // Abaikan baris "TOTAL" yang ada di paling bawah file hasil export
-        if (String(nama).toUpperCase().includes("TOTAL")) return null;
+        // Kata kunci yang dikenali sebagai nama kolom (sudah di-normalize)
+        const KNOWN = ["nama","name","namakaryawan","usia","age","umur","masakerja","masakerjan","mk","masakerjathn","gajitahunan","gaji","salary","upah","tipebenefit","benefit","tipe","gender","jeniskelamin","kelamin"];
 
-        return {
-          id: Date.now() + i,
-          nama: nama || `Karyawan ${i + 1}`,
-          age: isNaN(age) || age === 0 ? 35 : age,
-          masaKerja: isNaN(masaKerja) ? 5 : masaKerja,
-          gajiTahunan: isNaN(gajiTahunan) || gajiTahunan === 0 ? 60000000 : gajiTahunan,
-          tipeBenefit: tipeBenefit || "UUCK",
-          gender: gender || "Pria"
-        };
-      }).filter(Boolean); // Hapus data null (seperti baris Total)
+        // Cari baris yang mengandung ≥ 3 kolom yang dikenali → itu baris header
+        let headerIdx = -1;
+        for (let i = 0; i < rawRows.length; i++) {
+          const norm = rawRows[i].map(c => String(c).toLowerCase().replace(/[^a-z0-9]/g, ""));
+          if (norm.filter(k => KNOWN.includes(k)).length >= 3) { headerIdx = i; break; }
+        }
 
-      if (imp.length > 0) {
-        setEmployees(imp); // Replace data (Ganti prev => [...prev, ...imp] jika ingin mode "add")
+        if (headerIdx === -1) {
+          alert("Format file tidak dikenali.\nPastikan file menggunakan Template yang sudah di-download, atau file hasil Export dari kalkulator ini.");
+          return;
+        }
+
+        // Buat peta kolom: keyword → index kolom
+        const headerRow = rawRows[headerIdx].map(c => String(c).toLowerCase().replace(/[^a-z0-9]/g, ""));
+        const colIdx = (keywords) => { for (const k of keywords) { const i = headerRow.indexOf(k); if (i !== -1) return i; } return -1; };
+
+        const iNama    = colIdx(["nama","name","namakaryawan"]);
+        const iAge     = colIdx(["usia","age","umur"]);
+        const iMK      = colIdx(["masakerja","masakerjan","mk","masakerjathn"]);
+        const iGaji    = colIdx(["gajitahunan","gaji","salary","upah"]);
+        const iBenefit = colIdx(["tipebenefit","benefit","tipe"]);
+        const iGender  = colIdx(["gender","jeniskelamin","kelamin"]);
+
+        const imp = rawRows.slice(headerIdx + 1).map((row, i) => {
+          const nama  = iNama    >= 0 ? String(row[iNama] ?? "").trim() : "";
+          const age   = iAge     >= 0 ? Number(row[iAge])   : NaN;
+          const mk    = iMK      >= 0 ? Number(row[iMK])    : NaN;
+          const gaji  = iGaji    >= 0 ? Number(row[iGaji])  : NaN;
+          const tipe  = iBenefit >= 0 ? String(row[iBenefit] ?? "").trim() : "";
+          const gen   = iGender  >= 0 ? String(row[iGender]  ?? "").trim() : "";
+
+          // Lewati baris kosong dan baris TOTAL
+          if (!nama && isNaN(age) && isNaN(gaji)) return null;
+          if (nama.toUpperCase().includes("TOTAL")) return null;
+
+          return {
+            id: Date.now() + i,
+            nama: nama || `Karyawan ${i + 1}`,
+            age: isNaN(age) || age <= 0 ? 35 : Math.round(age),
+            masaKerja: isNaN(mk) || mk < 0 ? 0 : Math.round(mk),
+            gajiTahunan: isNaN(gaji) || gaji <= 0 ? 60000000 : Math.round(gaji),
+            tipeBenefit: ["UUCK","Pension","Both"].includes(tipe) ? tipe : "UUCK",
+            gender: ["Pria","Wanita"].includes(gen) ? gen : "Pria",
+          };
+        }).filter(Boolean);
+
+        if (imp.length === 0) {
+          alert("Tidak ada data karyawan yang ditemukan.\nPastikan ada baris data di bawah baris header kolom.");
+          return;
+        }
+
+        setEmployees(imp);
         setMode("bulk");
+      } catch {
+        alert("Gagal membaca file. Pastikan file tidak rusak dan berformat .xlsx / .xls / .csv.");
       }
     };
-    reader.readAsBinaryString(file);
-    e.target.value = "";
+    reader.readAsArrayBuffer(file);
   };
 
   const calculate=useCallback(()=>{
