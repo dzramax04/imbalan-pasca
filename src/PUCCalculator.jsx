@@ -215,15 +215,66 @@ export default function PUCCalculator(){
     setEmployees(gen);setMode("bulk");
   };
 
-  const handleFileImport=e=>{
-    const file=e.target.files[0];if(!file)return;
-    const reader=new FileReader();
-    reader.onload=evt=>{
-      const wb=XLSX.read(evt.target.result,{type:"binary"});
-      const data=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-      const imp=data.map((r,i)=>({id:Date.now()+i,nama:r["Nama"]||r["nama"]||`Karyawan ${i+1}`,age:Number(r["Usia"]||r["usia"]||r["age"]||35),masaKerja:Number(r["Masa Kerja"]||r["masa_kerja"]||r["masaKerja"]||5),gajiTahunan:Number(r["Gaji Tahunan"]||r["gaji_tahunan"]||r["gajiTahunan"]||6e7),tipeBenefit:r["Tipe Benefit"]||r["tipeBenefit"]||"UUCK",gender:r["Gender"]||r["gender"]||"Pria"}));
-      if(imp.length>0){setEmployees(imp);setMode("bulk")}
-    };reader.readAsBinaryString(file);e.target.value="";
+const handleFileImport = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const wb = XLSX.read(evt.target.result, { type: "binary" });
+      
+      // 1. Cerdas memilih sheet. Jika ada sheet "02_KALKULASI_PUC", pakai itu.
+      // Jika tidak, gunakan sheet pertama (untuk file excel upload manual)
+      let sheetName = wb.SheetNames[0];
+      if (wb.SheetNames.includes("02_KALKULASI_PUC")) {
+        sheetName = "02_KALKULASI_PUC";
+      }
+      
+      // Lewati baris kosong di atas jika mengambil dari template export
+      const data = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: "" });
+      
+      // Filter data kosong (terkadang membaca baris summary di bawah)
+      const validData = data.filter(r => Object.keys(r).length > 2);
+
+      const imp = validData.map((r, i) => {
+        // 2. Fungsi pencocokan nama kolom secara fleksibel
+        const findValue = (keywords) => {
+          for (let key in r) {
+            const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (keywords.includes(normalizedKey)) {
+              return r[key];
+            }
+          }
+          return null;
+        };
+
+        const nama = findValue(["nama", "name", "namakaryawan"]);
+        const age = Number(findValue(["usia", "age", "umur"]));
+        const masaKerja = Number(findValue(["masakerja", "masakerjan", "mk", "masakerjathn"]));
+        const gajiTahunan = Number(findValue(["gajitahunan", "gaji", "salary", "upah"]));
+        const tipeBenefit = findValue(["tipebenefit", "benefit", "tipe"]);
+        const gender = findValue(["gender", "jeniskelamin", "kelamin"]);
+
+        // Abaikan baris "TOTAL" yang ada di paling bawah file hasil export
+        if (String(nama).toUpperCase().includes("TOTAL")) return null;
+
+        return {
+          id: Date.now() + i,
+          nama: nama || `Karyawan ${i + 1}`,
+          age: isNaN(age) || age === 0 ? 35 : age,
+          masaKerja: isNaN(masaKerja) ? 5 : masaKerja,
+          gajiTahunan: isNaN(gajiTahunan) || gajiTahunan === 0 ? 60000000 : gajiTahunan,
+          tipeBenefit: tipeBenefit || "UUCK",
+          gender: gender || "Pria"
+        };
+      }).filter(Boolean); // Hapus data null (seperti baris Total)
+
+      if (imp.length > 0) {
+        setEmployees(imp); // Replace data (Ganti prev => [...prev, ...imp] jika ingin mode "add")
+        setMode("bulk");
+      }
+    };
+    reader.readAsBinaryString(file);
+    e.target.value = "";
   };
 
   const calculate=useCallback(()=>{
